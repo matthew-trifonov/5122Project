@@ -8,6 +8,17 @@ import warnings
 import calendar
 import plotly.express as px
 warnings.filterwarnings("ignore")
+import openai
+from dotenv import load_dotenv
+import os
+import io
+
+load_dotenv()
+client = openai.OpenAI(
+    base_url=os.getenv("GROQ_BASE_URL"),
+    api_key=os.getenv("GROQ_API_KEY")
+)
+
 
 @st.cache_data
 def preprocess(df):
@@ -169,6 +180,8 @@ else:
 
 
 # Display both plots in Streamlit
+st.markdown("---")
+st.subheader("📊 Bar and Pie Charts")
 st.pyplot(fig)
 
 # Count flights by state
@@ -194,7 +207,94 @@ map.update_layout(
 )
 
 # Display the map in Streamlit
+st.markdown("---")
+st.subheader("🗺️ Choropleth Map: Flight Count by State")
 st.plotly_chart(map)
 
+# Unified dropdown for insight generation
+st.markdown("---")
+st.subheader("📊 Generate Insight for Selected Visualization")
+visualization_option = st.selectbox(
+    "Choose a visualization to analyze:",
+    ["Bar Chart", "Pie Chart", "Choropleth Map"]
+)
+
+# Session storage for insight and chat
+if "insight_text" not in st.session_state:
+    st.session_state.insight_text = ""
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+# Insight generation section
+if st.button("Generate Insight"):
+    if visualization_option == "Bar Chart":
+        selected_table = count_data.to_markdown(index=False)
+        prompt = f"""Below is a table summarizing flight counts grouped by {"month" if global_filter == "airline" else "airline"} with respect to {global_filter} = {filter_value}:
+
+{selected_table}
+
+Please provide a concise and insightful interpretation of the bar chart data. Identify patterns, noteworthy trends, and any surprising findings."""
+    
+    elif visualization_option == "Pie Chart":
+        selected_table = count_data.to_markdown(index=False)
+        prompt = f"""Below is a table showing the same data used in the pie chart visualization for {global_filter} = {filter_value}:
+
+{selected_table}
+
+Please provide a concise and insightful interpretation of the pie chart's distribution, highlighting notable proportions or dominance."""
+    
+    elif visualization_option == "Choropleth Map":
+        selected_table = flight_counts_by_state.to_markdown(index=False)
+        prompt = f"""I have created a choropleth map showing the number of flights originating from each U.S. state:\n\n{selected_table}\n
+Please analyze the distribution of flight counts across states, identify which states dominate, note regional patterns, and provide potential reasons for the distribution."""
+
+    with st.spinner("Generating insight..."):
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": "You are a data analyst interpreting airline data visualizations."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        st.session_state.insight_text = response.choices[0].message.content
+        st.session_state.chat_history = []  # Reset chat
+        st.session_state.insight_prompt = prompt 
+
+
+# Single-question chat interface (no history)
+if st.session_state.insight_text:
+    st.markdown("#### ✨ Insight:")
+    st.markdown(st.session_state.insight_text)
+
+    st.markdown("---")
+    st.subheader("💬 Ask a Follow-up Question")
+
+    # Use form to avoid full rerun flicker
+    with st.form(key="chat_form"):
+        user_question = st.text_input("Ask a follow-up question:", key="chat_input")
+        ask_btn = st.form_submit_button("💬 Ask")
+
+    if ask_btn:
+        if user_question and "insight_prompt" in st.session_state:
+            with st.spinner("Getting answer..."):
+                messages = [
+                    {"role": "system", "content": "You are a helpful data analyst interpreting airline visualizations."},
+                    {"role": "user", "content": st.session_state.insight_prompt},
+                    {"role": "user", "content": f"My follow-up question is: {user_question}"}
+                ]
+                response = client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=messages
+                )
+                answer = response.choices[0].message.content
+
+            # Show only the latest Q&A
+            st.markdown("**You asked:**")
+            st.markdown(user_question)
+            st.markdown("**AI response:**")
+            st.markdown(answer)
+
 # Show the filtered data (first few rows)
+st.markdown("---")
+st.subheader("📄 Preview of Filtered Data")
 st.write(filtered_df.head())
