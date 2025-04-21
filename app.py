@@ -10,16 +10,19 @@ warnings.filterwarnings("ignore")
 import openai
 from dotenv import load_dotenv
 import os
-import streamlit as st
+import io
 import base64
-
+import requests
+import matplotlib as mpl
+from matplotlib.gridspec import GridSpec 
+import matplotlib.patches as mpatches 
+from scipy.optimize import curve_fit
 
 load_dotenv()
 client = openai.OpenAI(
     base_url=os.getenv("GROQ_BASE_URL"),
     api_key=os.getenv("GROQ_API_KEY")
 )
-
 
 @st.cache_data
 def preprocess(df):
@@ -66,13 +69,18 @@ def preprocess(df):
     
     return df
     
-
-@st.cache_data
+@st.cache_data(show_spinner="Loading data...")
 def load_data():
+    url = "https://www.dropbox.com/scl/fi/4o0y23cokyxuatgodan49/flights.csv?rlkey=27gqbgg6o7j63l47ai5kxe9jx&st=986ldess&dl=1"
+    response = requests.get(url, verify=False)  # Disable SSL verification
+    response.raise_for_status()  # Raise an error for bad status codes
+    flights = pd.read_csv(io.StringIO(response.text))
+    
+   
     airlines = pd.read_csv("airlines.csv")
     airlines = airlines.rename(columns={'AIRLINE': 'AL_FULLNAME', 'IATA_CODE': 'AIRLINE'})
     airports = pd.read_csv("airports.csv")
-    flights = pd.read_csv("flights.csv")
+
     flights.columns = flights.columns.str.lower()
     airlines.columns = airlines.columns.str.lower()
     airports.columns = airports.columns.str.lower()
@@ -88,14 +96,28 @@ def load_data():
     # Decrease sample size to speed up rendering in streamlit when testing
     df = df.sample(frac=0.01, random_state=42)
     return df
+
 def get_base64_of_image(image_path):
     with open(image_path, "rb") as img_file:
         return base64.b64encode(img_file.read()).decode()
-# Use a smaller sample of data to speed things up
+    
 st.set_page_config(layout="wide")
 st.title('INSIGHTS: Airline Data Analysis')
 tab1, tab2, tab3 = st.tabs(["Data plotting", "Data", "Insights Generation"])
-df = load_data()
+
+if "df" not in st.session_state:
+    st.session_state.df = load_data()
+df = st.session_state.df
+
+if "filtered_df_sub" in st.session_state:
+    df_filtered = st.session_state.filtered_df_sub
+elif "filtered_df" in st.session_state:
+    df_filtered = st.session_state.filtered_df
+else:
+    df_filtered = st.session_state.df 
+
+count_data = st.session_state.get("count_data", pd.DataFrame())
+
 with tab1:
     img_base64 = get_base64_of_image("background.png")
 
@@ -118,11 +140,11 @@ with tab1:
 
     global_filter = st.selectbox('Choose a global filter', ['Month', 'Weekday', 'Airline']).lower()
 
-# Convert to Python datetime    
+    # Convert to Python datetime    
     min_date = df['date'].min().to_pydatetime() 
     max_date = df['date'].max().to_pydatetime()
 
-# Create date sidebar slider
+    # Create date sidebar slider
     start_date, end_date = st.sidebar.slider(
         'Select Date Range',
         min_value=min_date,
@@ -131,73 +153,81 @@ with tab1:
         format="YYYY-MM-DD"
     )
 
-    # Filter the data based on the selected date range
-    filtered_df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
+    # --- 1. Filter the data based on the selected date range ---
+    if "filtered_df" not in st.session_state or st.session_state.date_range != (start_date, end_date):
+        st.session_state.date_range = (start_date, end_date)
+        st.session_state.filtered_df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
 
-    # Set filter values based on the global_filter selection
+    filtered_df = st.session_state.filtered_df
+
+
+    # --- 2. Set sub-filter options based on the global filter ---
     if global_filter == 'month':
         filter_values = filtered_df['month'].dropna().unique()
         filter_values = [month_name_map[i] for i in filter_values]
         filter_values.sort(key=lambda x: list(month_name_map.values()).index(x))
+
     elif global_filter == 'weekday':
-        filter_values = filtered_df['dow_name'].dropna().unique()
-        filter_values = list(day_name_map.values())
+        filter_values = list(day_name_map.values())  # Full week
         filter_values.sort(key=lambda x: list(day_name_map.values()).index(x))
+
     elif global_filter == 'airline':
         filter_values = filtered_df['al_fullname'].dropna().unique()
 
-    # Sub filter
+    # --- 3. Let user pick the sub-filter value ---
     filter_value = st.selectbox(f'Select {global_filter} to filter by', filter_values)
 
-    # Apply filtering based on selected global filter
-    if global_filter == 'month':
-        # Map the selected month name to its respective number
-        month_number = [k for k, v in month_name_map.items() if v == filter_value][0]
-        filtered_df = filtered_df[filtered_df['month'] == month_number]
-        count_data = filtered_df.groupby('al_fullname').size().reset_index(name='count')
-    elif global_filter == 'weekday':
-        filtered_df = filtered_df[filtered_df['dow_name'] == filter_value]
-        count_data = filtered_df.groupby('al_fullname').size().reset_index(name='count')
-    elif global_filter == 'airline':
-        filtered_df = filtered_df[filtered_df['al_fullname'] == filter_value]
-        count_data = filtered_df.groupby('month').size().reset_index(name='count')
+    # --- 4. Compute count_data only if needed ---
+    if "count_data" not in st.session_state or st.session_state.count_key != (global_filter, filter_value):
+        st.session_state.count_key = (global_filter, filter_value)
 
-    # Create plots
+        if global_filter == 'month':
+            month_number = [k for k, v in month_name_map.items() if v == filter_value][0]
+            df_filtered = filtered_df[filtered_df['month'] == month_number]
+            count_data = df_filtered.groupby('al_fullname').size().reset_index(name='count')
+
+        elif global_filter == 'weekday':
+            df_filtered = filtered_df[filtered_df['dow_name'] == filter_value]
+            count_data = df_filtered.groupby('al_fullname').size().reset_index(name='count')
+
+        elif global_filter == 'airline':
+            df_filtered = filtered_df[filtered_df['al_fullname'] == filter_value]
+            count_data = df_filtered.groupby('month').size().reset_index(name='count')
+            count_data['month'] = count_data['month'].map(month_name_map)
+
+    st.session_state.filtered_df_sub = df_filtered
+    st.session_state.count_data = count_data
+
+    count_data = st.session_state.count_data
+    df_filtered = st.session_state.filtered_df_sub if "filtered_df_sub" in st.session_state else filtered_df
+
     fig, axes = plt.subplots(1, 2, figsize=(15, 6)) 
+
     if global_filter == 'airline':
-        # Bar plot
-        count_data = filtered_df.groupby('month').size().reset_index(name='count')
-        count_data['month'] = count_data['month'].map(month_name_map)
-        
+        # Already grouped by month with mapped names
         sns.barplot(x='count', y='month', data=count_data, orient='h', palette="viridis", ax=axes[0])
         axes[0].set_xlabel('Number of Flights')
         axes[0].set_ylabel('Month')
         axes[0].set_title(f'Flights for {filter_value} across Months')
 
-        # Pie chart
         pie_data = count_data.set_index('month')
         axes[1].pie(pie_data['count'], labels=pie_data.index, autopct='%1.1f%%', 
                     colors=sns.color_palette("viridis", len(pie_data)), startangle=90)
         axes[1].set_title(f'Monthly Distribution for Airline {filter_value}')
 
     else:
-        # Bar plot
-        count_data = filtered_df.groupby('al_fullname').size().reset_index(name='count')
-        
+        # Grouped by airline
         sns.barplot(x='count', y='al_fullname', data=count_data, orient='h', palette="viridis", ax=axes[0])
         axes[0].set_xlabel('Number of Flights')
         axes[0].set_ylabel('Airline')
         axes[0].set_title(f'Count of flights for {global_filter} = {filter_value}')
 
         pie_data = count_data.set_index('al_fullname')
+        pie_labels = pie_data.index.map(lambda full_name: df[df['al_fullname'] == full_name]['airline'].iloc[0])
 
-        # Map full names to abbreviations for readability
-        pie_labels = pie_data.index.map(lambda full_name: filtered_df[filtered_df['al_fullname'] == full_name]['airline'].iloc[0])
-        
         axes[1].pie(pie_data['count'], labels=pie_labels, autopct='%1.1f%%', 
                     colors=sns.color_palette("viridis", len(pie_data)), startangle=90)
         axes[1].set_title(f'Flight Distribution for {global_filter} = {filter_value}')
-
 
     # Display both plots in Streamlit
     st.markdown("---")
@@ -262,17 +292,158 @@ with tab1:
     # ✅ Display in Streamlit
     st.subheader("✈️ Flight Delay Level Breakdown by Airline")
     st.pyplot(fig)
-    
-    
 
+    def get_stats(group):
+        return {'min': group.min(), 'max': group.max(),
+                'count': group.count(), 'mean': group.mean()}
+    #_______________________________________________________________
+    # Creation of a dataframe with statitical infos on each airline:
+    global_stats = df['departure_delay'].groupby(df['airline']).apply(get_stats).unstack()
+    global_stats = global_stats.sort_values('count')
+    
+    # Styling font
+    font = {'family': 'sans-serif', 'weight': 'bold', 'size': 15}
+    mpl.rc('font', **font)
+
+    # Data prep
+    df2 = df.loc[:, ['airline', 'departure_delay']].copy()
+    df2['airline'] = df2['airline'].replace(abbr_companies)
+
+    colors = ['royalblue', 'grey', 'wheat', 'c', 'firebrick', 'seagreen', 'lightskyblue',
+            'lightcoral', 'yellowgreen', 'gold', 'tomato', 'violet', 'aquamarine', 'chartreuse']
+
+    # Set up figure
+    fig = plt.figure(figsize=(16, 15))
+    gs = GridSpec(2, 2)
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax3 = fig.add_subplot(gs[1, :])
+
+    # --- Pie chart 1: % of flights per company ---
+    labels = [s for s in global_stats.index]
+    sizes = global_stats['count'].values
+    explode = [0.3 if sizes[i] < 20000 else 0.0 for i in range(len(abbr_companies))]
+
+    patches, texts, autotexts = ax1.pie(sizes, explode=explode,
+        labels=labels, colors=colors, autopct='%1.0f%%',
+        shadow=False, startangle=0)
+
+    for t in texts:
+        t.set_fontsize(14)
+    ax1.axis('equal')
+    ax1.set_title('% of flights per company',
+                bbox={'facecolor': 'midnightblue', 'pad': 5}, color='w', fontsize=18)
+
+    # Custom legend
+    comp_handler = [
+        mpatches.Patch(color=colors[i],
+                    label=f"{global_stats.index[i]}: {abbr_companies[global_stats.index[i]]}")
+        for i in range(len(abbr_companies))
+    ]
+    ax1.legend(handles=comp_handler, bbox_to_anchor=(0.2, 0.9),
+            fontsize=13, bbox_transform=fig.transFigure)
+
+    # --- Pie chart 2: Mean delay at origin ---
+    sizes = global_stats['mean'].apply(lambda x: max(x, 0)).values
+    explode = [0.0 if sizes[i] < 20000 else 0.01 for i in range(len(abbr_companies))]
+    patches, texts, autotexts = ax2.pie(sizes, explode=explode, labels=labels,
+        colors=colors, shadow=False, startangle=0,
+        autopct=lambda p: '{:.0f}'.format(p * sum(sizes) / 100))
+
+    for t in texts:
+        t.set_fontsize(14)
+    ax2.axis('equal')
+    ax2.set_title('Mean delay at origin',
+                bbox={'facecolor': 'midnightblue', 'pad': 5}, color='w', fontsize=18)
+
+    # --- Strip plot: Departure delays ---
+    strip_colors = ['firebrick', 'gold', 'lightcoral', 'aquamarine', 'c', 'yellowgreen', 'grey',
+                    'seagreen', 'tomato', 'violet', 'wheat', 'chartreuse', 'lightskyblue', 'royalblue']
+
+    sns.stripplot(y="airline", x="departure_delay", size=4, palette=strip_colors,
+                data=df2, linewidth=0.5, jitter=True, ax=ax3)
+
+    plt.setp(ax3.get_xticklabels(), fontsize=14)
+    plt.setp(ax3.get_yticklabels(), fontsize=14)
+    ax3.set_xticklabels(['{:2.0f}h{:2.0f}m'.format(*divmod(x, 60))
+                        for x in ax3.get_xticks()])
+
+    ax3.yaxis.label.set_visible(False)
+    plt.xlabel('Departure delay',
+            fontsize=18, bbox={'facecolor': 'midnightblue', 'pad': 5},
+            color='w', labelpad=20)
+
+    plt.tight_layout(w_pad=3)
+
+    # --- Streamlit Display ---
+    st.subheader("✈️ Airline Delay Analysis")
+    st.pyplot(fig)
+
+    def func(x, a, b):
+        return a * np.exp(-x / b)
+
+    # Airline full names
+    airline_names = [abbr_companies[x] for x in global_stats.index]
+
+    # DataFrame df2 must have full airline names mapped
+    df2['airline'] = df2['airline'].replace(abbr_companies)
+
+    # Begin plotting
+    points = []
+    label_company = []
+    fig = plt.figure(figsize=(11, 11))
+
+    for i, carrier_name in enumerate(airline_names, start=1):
+        ax = fig.add_subplot(5, 3, i)
+
+        # Histogram and fit
+        data = df2[df2['airline'] == carrier_name]['departure_delay']
+        n, bins, patches = ax.hist(data, range=(15, 180), density=True, bins=60, color='skyblue', alpha=0.7)
+
+        bin_centers = bins[:-1] + 0.5 * (bins[1:] - bins[:-1])
+        popt, pcov = curve_fit(func, bin_centers, n, p0=[1, 2])
+
+        points.append(popt)
+        label_company.append(carrier_name)
+
+        # Plot the fitted curve
+        ax.plot(bin_centers, func(bin_centers, *popt), 'r-', linewidth=2)
+
+        # Tick labels formatting
+        if i < 10:
+            ax.set_xticklabels([])
+        else:
+            ax.set_xticklabels(['{:2.0f}h{:2.0f}m'.format(*divmod(x, 60)) for x in ax.get_xticks()])
+
+        # Title
+        ax.set_title(carrier_name, fontsize=14, fontweight='bold', color='darkblue')
+
+        # Labels
+        if i == 4:
+            ax.text(-0.3, 0.9, 'Normalized count of flights', fontsize=16, rotation=90,
+                    color='k', horizontalalignment='center', transform=ax.transAxes)
+        if i == 14:
+            ax.text(0.5, -0.5, 'Delay at origin', fontsize=16, rotation=0,
+                    color='k', horizontalalignment='center', transform=ax.transAxes)
+
+        # Parameters a and b on plot
+        ax.text(0.68, 0.7, f'a = {round(popt[0], 2)}\nb = {round(popt[1], 1)}',
+                style='italic', transform=ax.transAxes, fontsize=12, family='fantasy',
+                bbox={'facecolor': 'tomato', 'alpha': 0.8, 'pad': 5})
+
+    plt.tight_layout()
+
+    # 🎯 Streamlit Display
+    st.subheader("📈 Histogram Fit: Departure Delays per Airline")
+    st.pyplot(fig)
+    
 with tab2:
     # Month and day name mappings
     # Show the filtered data (first few rows)
     st.markdown("---")
     st.subheader("📄 Preview of Filtered Data")
     st.write(filtered_df.head())
-    st.markdown("---")
-    
+    st.markdown("---") 
 
 with tab3:
     # Unified dropdown for insight generation
