@@ -8,9 +8,7 @@ import calendar
 import plotly.express as px
 warnings.filterwarnings("ignore")
 import openai
-import io
 import base64
-import requests
 import matplotlib as mpl
 from matplotlib.gridspec import GridSpec 
 import matplotlib.patches as mpatches 
