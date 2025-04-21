@@ -86,7 +86,7 @@ def load_data():
 
     airports = pd.read_csv("airports.csv")
     # Decrease sample size to speed up rendering in streamlit when testing
-    df = df.sample(frac=0.01, random_state=42)
+    df = df.sample(frac=0.25, random_state=42)
     return df
 
 def get_base64_of_image(image_path):
