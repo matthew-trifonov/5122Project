@@ -8,8 +8,6 @@ import calendar
 import plotly.express as px
 warnings.filterwarnings("ignore")
 import openai
-from dotenv import load_dotenv
-import os
 import io
 import base64
 import requests
@@ -18,11 +16,11 @@ from matplotlib.gridspec import GridSpec
 import matplotlib.patches as mpatches 
 from scipy.optimize import curve_fit
 
-load_dotenv()
 client = openai.OpenAI(
-    base_url=os.getenv("GROQ_BASE_URL"),
-    api_key=os.getenv("GROQ_API_KEY")
+    base_url=st.secrets["GROQ_BASE_URL"],
+    api_key=st.secrets["GROQ_API_KEY"]
 )
+
 
 @st.cache_data
 def preprocess(df):
