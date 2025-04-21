@@ -69,14 +69,7 @@ def preprocess(df):
     
 @st.cache_data(show_spinner="Loading data...")
 def load_data():
-    try:
-        url = "https://www.dropbox.com/scl/fi/4o0y23cokyxuatgodan49/flights.csv?rlkey=27gqbgg6o7j63l47ai5kxe9jx&st=986ldess&dl=1"
-        response = requests.get(url)
-        response.raise_for_status()
-        flights = pd.read_csv(io.StringIO(response.text))
-    except Exception as e:
-        st.error(f"Failed to load flights.csv: {e}")
-        st.stop()
+    flights = pd.read_csv("flights_sample.csv")
    
     airlines = pd.read_csv("airlines.csv")
     airlines = airlines.rename(columns={'AIRLINE': 'AL_FULLNAME', 'IATA_CODE': 'AIRLINE'})
